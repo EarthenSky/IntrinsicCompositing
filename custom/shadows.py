@@ -10,6 +10,7 @@ def calculate_screen_space_shadows(
     light_direction:np.ndarray[np.float64], # [x,y,z]
     depth_map, # closest values will be 1.0, while furthest values will be 0.0
     composite_mask, # NOTE: if this mask is set to always be one, then the mask will display all shadows
+    working_area,
     composite_mask_depth:float,
     depth_multiplier:float=1.0,
 ):
@@ -18,12 +19,12 @@ def calculate_screen_space_shadows(
     - light_direction is a vector which represents the ray direction of the light. Shadows will step in the opposite direction.
     - `composite_mask` is the mask which is the size of the original image & contains only the composite image. If a pixel is behind this one, then we should include the shadow.
     - `depth_multiplier` refers to the conversion rate between the depth values and the actual metric depth of the scene. Amaller than 1.0 makes the scene more shallow, while larger than 1.0 makes the scene deeper.
-    
+
     returns:
     - a colored mask representing which pixels were shaded by the new composited image
     """
 
-    MAX_STEPS = 32
+    MAX_STEPS = 256
     height, width = depth_map.shape[0], depth_map.shape[1]
 
     shaded_mask = np.zeros_like(composite_mask)
@@ -65,9 +66,15 @@ def calculate_screen_space_shadows(
                     break
                 
                 # take a step, and check the texture again
-                if camera_relative_coord[2] < depth_multiplier * depth_map[approx_y, approx_x]:
-                    # set shadow iff the shadow was being casted by our object specifically
-                    shaded_mask[y, x] = 1 if composite_mask[approx_y, approx_x] > 0.0 else 0
+                current_depth_loc = camera_relative_coord[2]
+                depth_map_value = depth_multiplier * depth_map[approx_y, approx_x]
+                if current_depth_loc < depth_map_value:
+                    if composite_mask[approx_y, approx_x] > 0.0:
+                        # let the light ray go behind our object if there is space
+                        #if current_depth_loc > (depth_map_value - composite_mask_depth):
+                        if current_depth_loc > composite_mask_depth:
+                            # set shadow iff the shadow was being casted by our object specifically
+                            shaded_mask[y, x] = 1
                     
 
     return shaded_mask
@@ -103,15 +110,23 @@ if __name__ == "__main__":
         left : left + fg_mask_rescaled.shape[1]
     ] = fg_mask_rescaled
 
+    comp_depth = utils.composite_depth(
+        im_depth,
+        (top, left),
+        fg_depth_rescaled,
+        fg_mask_rescaled,
+    )
+
     # everything_mask = np.ones_like(combined_depth_map, dtype=np.uint8)
 
     print("2. generate shaded maps")
     light_direction = np.asarray([16, 16, -1])
     shaded_mask = calculate_screen_space_shadows(
-        light_direction, 
-        combined_depth_map, 
-        full_size_mask, 
-        8.0, 
+        light_direction,
+        combined_depth_map,
+        full_size_mask,
+        working_area=[(30, 450), (350, 700)], # (xmin, xmax), (ymin, ymax)
+        composite_mask_depth=64.0 * 190.0 / 255.0, # TODO: make the lower bound the min + this depth
         depth_multiplier=64.0,
     )
 
