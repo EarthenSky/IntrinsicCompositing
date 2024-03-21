@@ -110,12 +110,12 @@ if __name__ == "__main__":
         left : left + fg_mask_rescaled.shape[1]
     ] = fg_mask_rescaled
 
-    comp_depth = utils.composite_depth(
-        im_depth,
-        (top, left),
-        fg_depth_rescaled,
-        fg_mask_rescaled,
-    )
+    #comp_depth = utils.composite_depth(
+    #    im_depth,
+    #    (top, left),
+    #    fg_depth_rescaled,
+    #    fg_mask_rescaled,
+    #)
 
     # everything_mask = np.ones_like(combined_depth_map, dtype=np.uint8)
 
@@ -126,7 +126,7 @@ if __name__ == "__main__":
         combined_depth_map,
         full_size_mask,
         working_area=[(30, 450), (350, 700)], # (xmin, xmax), (ymin, ymax)
-        composite_mask_depth=64.0 * 190.0 / 255.0, # TODO: make the lower bound the min + this depth
+        composite_mask_depth=64.0 * 210.0 / 255.0, # TODO: make the lower bound the min + this depth
         depth_multiplier=64.0,
     )
 
