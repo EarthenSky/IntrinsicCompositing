@@ -245,7 +245,6 @@ def run_full_pipeline(
     np_to_pil(comp_normals).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_normals.png")
     '''
     
-
 # ----------------------------------------------- #
 # config 
     
