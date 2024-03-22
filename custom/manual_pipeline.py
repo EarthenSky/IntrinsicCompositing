@@ -12,6 +12,7 @@ from chrislib.normal_util import get_omni_normals
 import intrinsic.model_util
 import intrinsic.pipeline
 
+import intrinsic_compositing.shading.pipeline
 from intrinsic_compositing.shading.pipeline import (
     load_reshading_model,
     compute_reshading,
@@ -19,7 +20,7 @@ from intrinsic_compositing.shading.pipeline import (
     get_light_coeffs
 )
 
-from intrinsic_compositing import albedo
+import intrinsic_compositing.albedo.pipeline
 
 from omnidata_tools.model_util import load_omni_model
 
@@ -49,6 +50,12 @@ def run_full_pipeline(
 
     print("\n1.3 loading normals model")
     normals_model = load_omni_model()
+
+    print("\n1.4 loading albedo model")
+    albedo_model = intrinsic_compositing.albedo.pipeline.load_albedo_harmonizer()
+
+    print("\n1.5 loading reshading model")
+    reshading_model = load_reshading_model('further_trained')
 
     print("\n2.1 load & resize bg_im")
     bg_im_original = load_image(bg_im_path)
@@ -93,7 +100,7 @@ def run_full_pipeline(
         maintain_size=True,
         linear=True,
     )
-    im_inv_shading, im_albedo = result["inv_shading"], result["albedo"]
+    im_inv_shading, im_albedo = result["inv_shading"][:, :, np.newaxis], result["albedo"]
 
     print("\n4.2 compute fg shading & albedo")
     result = intrinsic.pipeline.run_pipeline(
@@ -103,7 +110,7 @@ def run_full_pipeline(
         maintain_size=True,
         linear=True,
     )
-    fg_im_inv_shading, fg_im_albedo = result["inv_shading"], result["albedo"]
+    fg_im_inv_shading, fg_im_albedo = result["inv_shading"][:, :, np.newaxis], result["albedo"]
 
     print("\n5.1 compute bg normals")
     im_normals = get_omni_normals(normals_model, bg_im)
@@ -119,8 +126,8 @@ def run_full_pipeline(
     print("\t6.1 compute rescaled images")
 
     # rescale computed images for the selected composite location
-    fg_scaled_height = cropped_height * fg_scale_relative
-    fg_scaled_width  = cropped_width  * fg_scale_relative
+    fg_scaled_height = int(cropped_height * fg_scale_relative)
+    fg_scaled_width  = int(cropped_width  * fg_scale_relative)
     fg_im_rescaled          = skimage.transform.resize(fg_im_crop, (fg_scaled_height, fg_scaled_width), anti_aliasing=True)
     fg_mask_rescaled        = skimage.transform.resize(fg_mask_crop, (fg_scaled_height, fg_scaled_width), anti_aliasing=True)
     fg_depth_rescaled       = skimage.transform.resize(fg_im_depth, (fg_scaled_height, fg_scaled_width), anti_aliasing=True)
@@ -133,18 +140,18 @@ def run_full_pipeline(
     print("\t6.2 get fg_rescaled images")
 
     # composite the mask
-    fg_full_mask = np.zeros((bg_height, bg_width), dtype=np.float64)
+    fg_full_mask = np.zeros((bg_height, bg_width), dtype=np.float32)
     fg_full_mask[
         top : top + int(fg_scaled_height), 
         left : left + int(fg_scaled_width),
     ] = fg_mask_rescaled
-    fg_full_depth = np.zeros((bg_height, bg_width), dtype=np.float64)
+    fg_full_depth = np.zeros((bg_height, bg_width), dtype=np.float32)
     fg_full_depth[
         top : top + int(fg_scaled_height), 
         left : left + int(fg_scaled_width),
     ] = fg_depth_rescaled
 
-    print("\t6.2 get composites")
+    print("\t6.3 get composites")
 
     comp = utils.composite_crop(
         bg_im,
@@ -153,7 +160,7 @@ def run_full_pipeline(
         fg_mask_rescaled,
     )
     # NOTE: we're going to control this more in the shadow generation part.
-    # TODO: is this required to do any future analyses like harmonization? - we could, but don't have to
+    # TODO: is this required to do any future analyses like harmonization? - we could, but don't have to use the updated one
     comp_depth = utils.composite_depth(
         im_depth,
         (top, left),
@@ -166,7 +173,6 @@ def run_full_pipeline(
         fg_inv_shading_rescaled,
         fg_mask_rescaled,
     )
-    #comp_albedo
     comp_normals = utils.composite_crop(
         im_normals, 
         (top, left),
@@ -174,45 +180,61 @@ def run_full_pipeline(
         fg_mask_rescaled,
     )
 
-    print("\n7.1 harmonize albedo (TODO)")
+    print("\n7.1 harmonize albedo")
 
-    '''
     # the albedo comes out gamma corrected so make it linear
-    im_albedo_harmonized = albedo.pipeline.harmonize_albedo(
-        self.comp_img,
-        fg_mask,
-        self.comp_shd, 
-        self.alb_model,
+    comp_albedo_harmonized = intrinsic_compositing.albedo.pipeline.harmonize_albedo(
+        comp,
+        fg_full_mask,
+        comp_inv_shading, 
+        albedo_model,
         reproduce_paper=False,
     ) ** 2.2
-    '''
 
-    print("\n7.2 get shading coefficients (TODO)")
+    original_albedo = (comp ** 2.2) / uninvert(comp_inv_shading)
+    # TODO: why does this result look so weird?
+    comp_harmonized = comp_albedo_harmonized * uninvert(comp_inv_shading)
 
-    '''
-    self.orig_coeffs, self.lgt_vis = get_light_coeffs(
-        small_bg_shd[:, :, 0], 
-        small_bg_nrm, 
-        small_bg_img
+    print("\n7.2 get shading coefficients")
+
+    # to ensure that normals are globally accurate we compute them at
+    # a resolution of 512 pixels, so resize our shading and image to compute 
+    # rescaled normals, then run the lighting model optimization
+    max_dim = max(bg_height, bg_width)
+    small_height = int(bg_height * (512.0 / max_dim))
+    small_width = int(bg_width * (512.0 / max_dim))
+    small_bg_im = skimage.transform.resize(bg_im, (small_height, small_width), anti_aliasing=True)
+    small_bg_normals = get_omni_normals(normals_model, small_bg_im)
+    small_bg_inv_shading = skimage.transform.resize(im_inv_shading, (small_height, small_width), anti_aliasing=True)
+
+    # TODO: what is light_vis?
+    coeffs, light_vis = intrinsic_compositing.shading.pipeline.get_light_coeffs(
+        small_bg_inv_shading[:, :, 0], 
+        small_bg_normals,
+        small_bg_im,
     )
-    '''
 
-    print("\n7.3 run reshading model (TODO)")
+    print("[x, y, z], c")
+    print(coeffs)
+
+    print("\n7.3 run reshading model")
     
     # run the reshading model using the various composited components,
     # and our lighting coefficients from the user interface
-    #main_result = compute_reshading(
-    #    bg_im,
-    #    np.zeros_like(bg_im), # TODO: is this correct?
-    #    im_inv_shading,
-    #    im_depth,
-    #    im_normals,
-    #    self.alb_harm,
-    #    self.coeffs,
-    #    self.shd_model
-    #)
+    
+    # TODO: is this correct?
+    main_result = compute_reshading(
+        comp_harmonized,
+        fg_full_mask,
+        comp_inv_shading,
+        comp_depth,
+        comp_normals,
+        comp_albedo_harmonized,
+        coeffs,
+        reshading_model,
+    )
 
-    print("\n7. write images")
+    print("\n8. write images")
     
     bg_im_name = os.path.basename(bg_im_path).split(".")[0]
     fg_im_name = os.path.basename(fg_im_path).split(".")[0]
@@ -221,7 +243,7 @@ def run_full_pipeline(
 
     np_to_pil(bg_im).save(f"output/{folder_name}/{bg_im_name}.png")
     np_to_pil(im_depth).save(f"output/{folder_name}/{bg_im_name}_depth.png")
-    np_to_pil(im_inv_shading).save(f"output/{folder_name}/{bg_im_name}_inv_shading.png")
+    np_to_pil(im_inv_shading[:, :, 0]).save(f"output/{folder_name}/{bg_im_name}_inv_shading.png")
     np_to_pil(im_albedo).save(f"output/{folder_name}/{bg_im_name}_albedo.png")
     np_to_pil(im_normals).save(f"output/{folder_name}/{bg_im_name}_normals.png")
 
@@ -229,42 +251,47 @@ def run_full_pipeline(
     np_to_pil(fg_full_depth).save(f"output/{folder_name}/{fg_im_name}_full_depth.png")
 
     # NOTE: despite the naming convention, all images are the "cropped" versions
-    '''
-    np_to_pil(fg_im_crop).save(f"output/{folder_name}/{fg_im_name}.png")
-    np_to_pil(fg_mask_crop).save(f"output/{folder_name}/{fg_im_name}_mask.png")
-    np_to_pil(fg_im_depth).save(f"output/{folder_name}/{fg_im_name}_depth.png")
-    np_to_pil(fg_im_inv_shading).save(f"output/{folder_name}/{fg_im_name}_inv_shading.png")
+    # np_to_pil(fg_im_crop).save(f"output/{folder_name}/{fg_im_name}.png")
+    # np_to_pil(fg_mask_crop).save(f"output/{folder_name}/{fg_im_name}_mask.png")
+    # np_to_pil(fg_im_depth).save(f"output/{folder_name}/{fg_im_name}_depth.png")
+    # np_to_pil(fg_im_inv_shading).save(f"output/{folder_name}/{fg_im_name}_inv_shading.png")
     np_to_pil(fg_im_albedo).save(f"output/{folder_name}/{fg_im_name}_albedo.png")
-    np_to_pil(fg_im_normals).save(f"output/{folder_name}/{fg_im_name}_normals.png")
+    # np_to_pil(fg_im_normals).save(f"output/{folder_name}/{fg_im_name}_normals.png")
 
     np_to_pil(comp).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}.png")
     #np_to_pil(comp_mask).save(f"output/{folder_name}/{fg_im_name}_mask.png")
-    np_to_pil(comp_depth).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_depth.png")
-    np_to_pil(comp_inv_shading).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
+    # np_to_pil(comp_depth).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_depth.png")
+    # np_to_pil(comp_inv_shading).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
     #np_to_pil(comp_albedo).save(f"output/{folder_name}/{fg_im_name}_albedo.png")
     np_to_pil(comp_normals).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_normals.png")
-    '''
+    np_to_pil(comp_harmonized).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_harmonized.png")
+    np_to_pil(comp_albedo_harmonized).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_albedo_harmonized.png")
+    np_to_pil(original_albedo).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_original_albedo.png")
+
+    np_to_pil(main_result['composite']).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_main_result.png")
+    #np_to_pil(main_result['reshading']).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_main_result_2.png")
     
 # ----------------------------------------------- #
 # config 
     
-#BG_IM_PATH = "../background/map-8526430.jpg"
-#BG_IM_PATH = "../background/door-8453898.jpg"
-#BG_IM_PATH = "../background/trees-8512979.jpg"
-#BG_IM_PATH = "../background/sheet-music-8463988.jpg"
-#BG_IM_PATH = "../background/soap-8429699.jpg" # TODO: test removing gamma correction for the soap example
-#BG_IM_PATH = "../background/IMG_1520.jpg"
-BG_IM_PATH = "../../background/cycling-8215973.jpg"
+#BG_IM_PATH = "../../background/map-8526430.jpg"
+BG_IM_PATH = "../../background/door-8453898.jpg"
+#BG_IM_PATH = "../../background/trees-8512979.jpg"
+#BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
+#BG_IM_PATH = "../../background/soap-8429699.jpg" # TODO: test removing gamma correction for the soap example
+#BG_IM_PATH = "../../background/IMG_1520.jpg"
+#BG_IM_PATH = "../../background/cycling-8215973.jpg"
 
-#FG_IM_PATH = "../foreground/dressing-table-947429.png"
-#FG_IM_PATH = "../foreground/trolley-2582492.png"
-FG_IM_PATH = "../../foreground/shampoo-1860642.png"
+#FG_IM_PATH = "../../foreground/dressing-table-947429.png"
+#FG_IM_PATH = "../../foreground/trolley-2582492.png"
+#FG_IM_PATH = "../../foreground/shampoo-1860642.png"
+FG_IM_PATH = "../../foreground/lotus-3192656.png"
 
-FOLDER_NAME = "shampoo-cycling"
+FOLDER_NAME = "lotus-door"
 
 MAX_EDGE_SIZE = 1024
 FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
-FG_TOP_LEFT_POS = [0.55, 0.04]
+FG_TOP_LEFT_POS = [0.35, 0.34]
 
 # ----------------------------------------------- #
 # main

@@ -1,19 +1,21 @@
-import os
+import os, time
 
 import numpy as np
 import skimage.transform
+from scipy.ndimage import gaussian_filter
+import numba
 
 from chrislib.data_util import load_image
 from chrislib.general import invert, uninvert, view, np_to_pil, to2np, add_chan
 
 import utils
 
-# TODO: reimplement as shader, or with numba for gpu/cpu (but fast)
+# TODO: reimplement as shader, or with numba for gpu?
+@numba.njit()
 def calculate_screen_space_shadows(
     light_direction: np.ndarray[np.float64], # [x,y,z]
     depth_map, # closest values will be positive, while furthest values will be 0.0 (or negative!)
     composite_mask, # NOTE: if this mask is set to always be one, then the mask will display all shadows
-    #working_area, # TODO: add support for working area when using the GUI (performance boost)
     depth_cutoff:float,
 ):
     """
@@ -34,17 +36,12 @@ def calculate_screen_space_shadows(
     # a step should be the correct size so that the last step ends up higher than the max depth in the image.
     min_depth = np.min(depth_map)
     max_depth = np.max(depth_map)
-    print(f"\tmin_depth: {min_depth}")
-    print(f"\tmax_depth: {max_depth}")
 
     light_direction = light_direction / np.linalg.norm(light_direction)
     step_vector = -light_direction / light_direction[2] * (min_depth - max_depth) / MAX_STEPS
-    print(f"\tstep_vector: {step_vector} (in px)")
+    #print(f"\tstep_vector: {step_vector} (in px)")
 
     for y in range(height):
-        if y % 50 == 0: 
-            print(f"\ty:{y}")
-        
         # TODO: implement this using raycasting instead of raymarching
         # Intersect ray with the quad generated from the corners of the pixel 
         for x in range(width):
@@ -84,37 +81,58 @@ def combine_depth(
     fg_full_depth: np.ndarray[np.float64], 
     
     bg_depth_multiplier=1.0,
-    fg_squish=0.2, 
+    fg_squish=0.2,
+    fg_depth_pad=0.2,
     fg_distance=0.6, # can be negative
 ) -> tuple[np.ndarray[np.float64], float]:
     closest_masked_z = np.max(fg_full_mask[fg_full_mask > 0.0] * bg_depth_multiplier * bg_depth[fg_full_mask > 0.0])
     depth_cutoff = closest_masked_z + fg_distance
 
     combined_depth = bg_depth_multiplier * bg_depth.copy()
-    combined_depth[fg_full_mask > 0.0] = depth_cutoff + fg_full_depth[fg_full_mask > 0.0] * fg_squish
+    combined_depth[fg_full_mask > 0.0] = depth_cutoff + fg_depth_pad + fg_full_depth[fg_full_mask > 0.0] * fg_squish
 
     return combined_depth, depth_cutoff
 
 if __name__ == "__main__":
-    FOLDER_NAME = "shampoo-cycling"
 
-    COMBINED_DEPTH_MAP_PATH = f"output/{FOLDER_NAME}/cycling-8215973_shampoo-1860642_depth.png"
-    COMBINED_NAME = os.path.basename(COMBINED_DEPTH_MAP_PATH).split(".")[0]
-    #COMBINED_NAME = "cycling-8215973_shampoo-1860642"
+    FOLDER_NAME = "lotus-door"
+    COMBINED_NAME = "lotus-door"
+
+    BG_DEPTH_PATH = f"output/{FOLDER_NAME}/door-8453898_depth.png"
+
+    FG_FULL_MASK_PATH = f"output/{FOLDER_NAME}/lotus-3192656_full_mask.png"
+    FG_FULL_DEPTH_PATH = f"output/{FOLDER_NAME}/lotus-3192656_full_depth.png"
+
+    # --------------------------------------------------- #
+
+    '''
+    FOLDER_NAME = "dresser-music"
+    COMBINED_NAME = "dresser-music"
+
+    BG_DEPTH_PATH = f"output/{FOLDER_NAME}/sheet-music-8463988_depth.png"
+
+    FG_FULL_MASK_PATH = f"output/{FOLDER_NAME}/dressing-table-947429_full_mask.png"
+    FG_FULL_DEPTH_PATH = f"output/{FOLDER_NAME}/dressing-table-947429_full_depth.png"
+    '''
+
+    # --------------------------------------------------- #
+
+    '''
+    FOLDER_NAME = "shampoo-cycling"
+    COMBINED_NAME = "cycling-8215973_shampoo-1860642"
 
     BG_DEPTH_PATH = f"output/{FOLDER_NAME}/cycling-8215973_depth.png"
 
     FG_FULL_MASK_PATH = f"output/{FOLDER_NAME}/shampoo-1860642_full_mask.png"
     FG_FULL_DEPTH_PATH = f"output/{FOLDER_NAME}/shampoo-1860642_full_depth.png"
-    
-    COMPOSITE_MASK = f"output/shampoo-cycling/shampoo-1860642_mask.png"
-    #COMPOSITE_NAME = "shampoo-1860642_mask"
-    COMPOSITE_NAME = os.path.basename(COMPOSITE_MASK).split(".")[0]
-    
+    '''
+
+    SHADOW_OPACITY = 0.45
+    SHADOW_BLUR_PX = 6
+
     # --------------------------------------------------- #
     
     print("\n1.1 load our images")
-    #combined_depth = load_image(COMBINED_DEPTH_MAP_PATH)
     bg_depth = load_image(BG_DEPTH_PATH)
 
     # get "full image mask" from the selected area mask 
@@ -131,26 +149,46 @@ if __name__ == "__main__":
         fg_full_depth,
         
         bg_depth_multiplier=64.0,
-        fg_squish=8.0,
-        fg_distance=4.2,
+        fg_squish=20.0,
+        fg_depth_pad=0.0,
+        fg_distance=0.2,
     )
 
+    print(f"\tbg_min_depth combined:{np.min(combined_depth)}")
+    print(f"\tbg_max_depth combined:{np.max(combined_depth)}")
+
+    start = time.time()
     print("\n2. generate shaded maps")
-    light_direction = np.asarray([16, 16, -1])
-    shaded_mask = calculate_screen_space_shadows(
+    light_direction = np.asarray([4, 20, -1], dtype=np.float64)
+    self_shading_shaded_mask = calculate_screen_space_shadows(
         light_direction,
         combined_depth,
         fg_full_mask,
-        #working_area=[(30, 450), (350, 700)], # (xmin, xmax), (ymin, ymax)
         depth_cutoff=depth_cutoff,
     )
+    end = time.time()
+    print(f"elapsed: {end-start}s")
 
-    # TODO: xor the screen-space shadows with ... ?
+    shaded_mask = self_shading_shaded_mask.copy()
+    shaded_mask[fg_full_mask > 0.0] = 0
 
-    print("\n3. combine shaded mask with image to produce a shadow")
+    print("\n3. combine shaded mask with image to produce a shadow & final result")
+
+    print("\t3.1. apply blur & intensity to shadow")
+
+    # get to-composite shadow
+    blurred_shadow_mask = np.zeros((bg_depth.shape[0], bg_depth.shape[1], 4))
+    blurred_shadow_mask[:, :, 3] = shaded_mask * SHADOW_OPACITY
+    blurred_shadow_mask[:, :, 3] = gaussian_filter(blurred_shadow_mask[:, :, 3], sigma=SHADOW_BLUR_PX)
+
+    # get albedo
+    # get shading
+    # get harmonized albedo of composite
+    # get reshading of composite
 
     print("\n4. save output")
 
     np_to_pil(combined_depth / np.max(combined_depth)).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_combined_depth.png")
     np_to_pil(shaded_mask).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_shaded_mask.png")
-
+    np_to_pil(self_shading_shaded_mask).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_shaded_mask_self_shading.png")
+    np_to_pil(blurred_shadow_mask).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_blurred_shadow_mask.png")
