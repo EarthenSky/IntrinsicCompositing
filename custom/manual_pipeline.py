@@ -124,7 +124,6 @@ def run_full_pipeline(
     print("\n6. create composited images")
 
     print("\t6.1 compute rescaled images")
-
     # rescale computed images for the selected composite location
     fg_scaled_height = int(cropped_height * fg_scale_relative)
     fg_scaled_width  = int(cropped_width  * fg_scale_relative)
@@ -138,13 +137,13 @@ def run_full_pipeline(
     left = int(fg_top_left_pos[1] * bg_width)
 
     print("\t6.2 get fg_rescaled images")
-
     # composite the mask
     fg_full_mask = np.zeros((bg_height, bg_width), dtype=np.float32)
     fg_full_mask[
         top : top + int(fg_scaled_height), 
         left : left + int(fg_scaled_width),
     ] = fg_mask_rescaled
+    fg_full_mask = fg_full_mask[:, :, np.newaxis]
     fg_full_depth = np.zeros((bg_height, bg_width), dtype=np.float32)
     fg_full_depth[
         top : top + int(fg_scaled_height), 
@@ -166,7 +165,7 @@ def run_full_pipeline(
         (top, left),
         fg_depth_rescaled,
         fg_mask_rescaled,
-    ) # TODO: normalize the depth map? it's possible for depth values to get outside the range [0, 1] - hdr tonemapping or something? make sure we have a large bit depth at least (f32 or f64).
+    )
     comp_inv_shading = utils.composite_crop(
         im_inv_shading,
         (top, left),
@@ -192,7 +191,7 @@ def run_full_pipeline(
     ) ** 2.2
 
     original_albedo = (comp ** 2.2) / uninvert(comp_inv_shading)
-    # TODO: why does this result look so weird?
+    # Q: why does this result look so weird? it just does
     comp_harmonized = comp_albedo_harmonized * uninvert(comp_inv_shading)
 
     print("\n7.2 get shading coefficients")
@@ -218,11 +217,9 @@ def run_full_pipeline(
     print(coeffs)
 
     print("\n7.3 run reshading model")
-    
+
     # run the reshading model using the various composited components,
     # and our lighting coefficients from the user interface
-    
-    # TODO: is this correct?
     main_result = compute_reshading(
         comp_harmonized,
         fg_full_mask,
@@ -247,7 +244,7 @@ def run_full_pipeline(
     np_to_pil(im_albedo).save(f"output/{folder_name}/{bg_im_name}_albedo.png")
     np_to_pil(im_normals).save(f"output/{folder_name}/{bg_im_name}_normals.png")
 
-    np_to_pil(fg_full_mask).save(f"output/{folder_name}/{fg_im_name}_full_mask.png")
+    np_to_pil(fg_full_mask[:, :, 0]).save(f"output/{folder_name}/{fg_im_name}_full_mask.png")
     np_to_pil(fg_full_depth).save(f"output/{folder_name}/{fg_im_name}_full_depth.png")
 
     # NOTE: despite the naming convention, all images are the "cropped" versions
@@ -260,8 +257,8 @@ def run_full_pipeline(
 
     np_to_pil(comp).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}.png")
     #np_to_pil(comp_mask).save(f"output/{folder_name}/{fg_im_name}_mask.png")
-    # np_to_pil(comp_depth).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_depth.png")
-    # np_to_pil(comp_inv_shading).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
+    np_to_pil(comp_depth).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_depth.png")
+    #np_to_pil(comp_inv_shading).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
     #np_to_pil(comp_albedo).save(f"output/{folder_name}/{fg_im_name}_albedo.png")
     np_to_pil(comp_normals).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_normals.png")
     np_to_pil(comp_harmonized).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_harmonized.png")
@@ -270,10 +267,10 @@ def run_full_pipeline(
 
     np_to_pil(main_result['composite']).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_main_result.png")
     #np_to_pil(main_result['reshading']).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_main_result_2.png")
-    
+
 # ----------------------------------------------- #
 # config 
-    
+
 #BG_IM_PATH = "../../background/map-8526430.jpg"
 BG_IM_PATH = "../../background/door-8453898.jpg"
 #BG_IM_PATH = "../../background/trees-8512979.jpg"
@@ -305,6 +302,6 @@ if __name__ == "__main__":
 
         FG_TOP_LEFT_POS,
         FG_RELATIVE_SCALE, # relative to the size of the output image
-        
+
         MAX_EDGE_SIZE
     )
