@@ -3,7 +3,7 @@ import os, time
 import numpy as np
 import skimage.transform
 from scipy.ndimage import gaussian_filter
-#import numba
+import numba
 
 from chrislib.data_util import load_image
 from chrislib.general import invert, uninvert, view, np_to_pil, to2np, add_chan
