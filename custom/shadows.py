@@ -98,10 +98,12 @@ if __name__ == "__main__":
     FOLDER_NAME = "lotus-door"
     COMBINED_NAME = "lotus-door"
 
-    BG_DEPTH_PATH = f"output/{FOLDER_NAME}/door-8453898_depth.png"
+    BG_DEPTH_PATH = f"output/cycling.png"
+    
+    IM_PATH = f"output/cycling-8215973_trolley-2582492.png"
 
-    FG_FULL_MASK_PATH = f"output/{FOLDER_NAME}/lotus-3192656_full_mask.png"
-    FG_FULL_DEPTH_PATH = f"output/{FOLDER_NAME}/lotus-3192656_full_depth.png"
+    FG_FULL_MASK_PATH = f"output/trolley-2582492_full_mask.png"
+    FG_FULL_DEPTH_PATH = f"output/trolley-2582492_full_depth.png"
 
     # --------------------------------------------------- #
 
@@ -134,6 +136,11 @@ if __name__ == "__main__":
     
     print("\n1.1 load our images")
     bg_depth = load_image(BG_DEPTH_PATH)
+    
+    # load full image and convert to RGBA
+    full_image = load_image(IM_PATH)
+    full_image = np.insert(full_image, 3, 1.0, axis=2)
+    print(full_image[0][0])
 
     # get "full image mask" from the selected area mask 
     fg_full_mask = load_image(FG_FULL_MASK_PATH)
@@ -180,6 +187,9 @@ if __name__ == "__main__":
     blurred_shadow_mask = np.zeros((bg_depth.shape[0], bg_depth.shape[1], 4))
     blurred_shadow_mask[:, :, 3] = shaded_mask * SHADOW_OPACITY
     blurred_shadow_mask[:, :, 3] = gaussian_filter(blurred_shadow_mask[:, :, 3], sigma=SHADOW_BLUR_PX)
+    
+    # Add shadow to image
+    full_image_with_shadow = full_image + blurred_shadow_mask
 
     # get albedo
     # get shading
@@ -188,7 +198,8 @@ if __name__ == "__main__":
 
     print("\n4. save output")
 
-    np_to_pil(combined_depth / np.max(combined_depth)).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_combined_depth.png")
-    np_to_pil(shaded_mask).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_shaded_mask.png")
-    np_to_pil(self_shading_shaded_mask).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_shaded_mask_self_shading.png")
-    np_to_pil(blurred_shadow_mask).save(f"output/{FOLDER_NAME}/{COMBINED_NAME}_blurred_shadow_mask.png")
+    np_to_pil(combined_depth / np.max(combined_depth)).save(f"output/_combined_depth.png")
+    np_to_pil(shaded_mask).save(f"output/_shaded_mask.png")
+    np_to_pil(self_shading_shaded_mask).save(f"output/_shaded_mask_self_shading.png")
+    np_to_pil(blurred_shadow_mask).save(f"output/_blurred_shadow_mask.png")
+    np_to_pil(full_image_with_shadow).save(f"output/image_with_shadow.png")
