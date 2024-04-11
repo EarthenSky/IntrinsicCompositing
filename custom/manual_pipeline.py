@@ -258,7 +258,7 @@ def run_full_pipeline(
     np_to_pil(comp).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}.png")
     #np_to_pil(comp_mask).save(f"output/{folder_name}/{fg_im_name}_mask.png")
     np_to_pil(comp_depth).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_depth.png")
-    #np_to_pil(comp_inv_shading).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
+    np_to_pil(comp_inv_shading[:, :, 0]).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
     #np_to_pil(comp_albedo).save(f"output/{folder_name}/{fg_im_name}_albedo.png")
     np_to_pil(comp_normals).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_normals.png")
     np_to_pil(comp_harmonized).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_harmonized.png")
@@ -272,19 +272,21 @@ def run_full_pipeline(
 # config 
 
 #BG_IM_PATH = "../../background/map-8526430.jpg"
-BG_IM_PATH = "../../background/door-8453898.jpg"
 #BG_IM_PATH = "../../background/trees-8512979.jpg"
-#BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
 #BG_IM_PATH = "../../background/soap-8429699.jpg" # TODO: test removing gamma correction for the soap example
 #BG_IM_PATH = "../../background/IMG_1520.jpg"
 #BG_IM_PATH = "../../background/cycling-8215973.jpg"
 
-#FG_IM_PATH = "../../foreground/dressing-table-947429.png"
 #FG_IM_PATH = "../../foreground/trolley-2582492.png"
 #FG_IM_PATH = "../../foreground/shampoo-1860642.png"
-FG_IM_PATH = "../../foreground/lotus-3192656.png"
 
-FOLDER_NAME = "lotus-door"
+BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
+FG_IM_PATH = "../../foreground/dressing-table-947429.png"
+FOLDER_NAME = "dresser-music"
+
+#BG_IM_PATH = "../../background/door-8453898.jpg"
+#FG_IM_PATH = "../../foreground/lotus-3192656.png"
+#FOLDER_NAME = "lotus-door"
 
 MAX_EDGE_SIZE = 1024
 FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg

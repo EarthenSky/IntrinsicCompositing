@@ -1,6 +1,18 @@
 import numpy as np
 
+import torch
+
 import skimage.transform
+
+from chrislib.general import uninvert, invert, round_32, view
+
+#import intrinsic_compositing.shading.pipeline
+from intrinsic_compositing.shading.pipeline import (
+    #load_reshading_model,
+    #compute_reshading,
+    generate_shd,
+    #get_light_coeffs,
+)
 
 def get_bbox(mask):
     rows = np.any(mask, axis=1)
@@ -66,3 +78,86 @@ def composite_depth(im, loc, fg, mask):
 
     return im
 
+def compute_reshading_with_shadow(
+    comp_harmonized, 
+    fg_full_mask, 
+    blurred_shadow_mask,
+
+    inv_shd, 
+    depth, 
+    normals, 
+    alb, 
+    coeffs, 
+    model
+):
+
+    # expects no channel dim on msk, shd and depth
+    if len(inv_shd.shape) == 3:
+        inv_shd = inv_shd[:, :, 0]
+
+    if len(fg_full_mask.shape) == 3:
+        fg_full_mask = fg_full_mask[:, :, 0]
+
+    if len(depth.shape) == 3:
+        depth = depth[:, :, 0]
+
+    h, w, _ = comp_harmonized.shape
+
+    # max_dim = max(h, w)
+    # if max_dim > 1024:
+    #     scale = 1024 / max_dim
+    # else:
+    #     scale = 1.0
+
+    comp_harmonized     = skimage.transform.resize(comp_harmonized, (round_32(h), round_32(w)))
+    alb                 = skimage.transform.resize(alb, (round_32(h), round_32(w)))
+    fg_full_mask        = skimage.transform.resize(fg_full_mask, (round_32(h), round_32(w)))
+    blurred_shadow_mask = skimage.transform.resize(blurred_shadow_mask, (round_32(h), round_32(w)))
+    inv_shd             = skimage.transform.resize(inv_shd, (round_32(h), round_32(w)))
+    dpt                 = skimage.transform.resize(depth, (round_32(h), round_32(w)))
+    nrm                 = skimage.transform.resize(normals, (round_32(h), round_32(w)))
+    fg_full_mask        = fg_full_mask.astype(np.float32)
+
+    hard_mask = (fg_full_mask > 0.5)
+
+    reg_shd = uninvert(inv_shd)
+    #img = (alb * reg_shd[:, :, None]).clip(0, 1)
+    #orig_alb = comp_harmonized / reg_shd[:, :, None].clip(1e-4)
+    
+    bad_shd_np = reg_shd.copy()
+    inf_shd = generate_shd(nrm, coeffs, hard_mask)
+    bad_shd_np[hard_mask == 1] = inf_shd
+
+    bad_img_np = alb * bad_shd_np[:, :, None]
+
+    sem_msk = torch.from_numpy(fg_full_mask).unsqueeze(0)
+    bad_img = torch.from_numpy(bad_img_np).permute(2, 0, 1)
+    bad_shd = torch.from_numpy(invert(bad_shd_np)).unsqueeze(0)
+    in_nrm  = torch.from_numpy(nrm).permute(2, 0, 1)
+    in_dpt  = torch.from_numpy(dpt).unsqueeze(0)
+    inp     = torch.cat((sem_msk, bad_img, bad_shd, in_nrm, in_dpt), dim=0).unsqueeze(0)
+    inp     = inp.cuda()
+    
+    with torch.no_grad():
+        out = model(inp).squeeze()
+
+    fin_shd = out.detach().cpu().numpy()
+    fin_shd = uninvert(fin_shd)
+    #print(alb.shape)
+    #print(fin_shd.shape)
+    #print(blurred_shadow_mask.shape)
+    fin_img = alb * (fin_shd[:, :, None] * (1.0 - blurred_shadow_mask))
+    #fin_img = alb * fin_shd[:, :, None]
+
+    normals    = skimage.transform.resize(nrm, (h, w))
+    fin_shd    = skimage.transform.resize(fin_shd, (h, w))
+    fin_img    = skimage.transform.resize(fin_img, (h, w))
+    bad_shd_np = skimage.transform.resize(bad_shd_np, (h, w))
+
+    result = {}
+    result['reshading']    = fin_shd
+    result['init_shading'] = bad_shd_np
+    result['composite']    = (fin_img ** (1/2.2)).clip(0, 1)
+    result['normals']      = normals
+
+    return result
