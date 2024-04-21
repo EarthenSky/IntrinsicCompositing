@@ -6,7 +6,7 @@ import skimage.transform
 
 from boosted_depth.depth_util import create_depth_models, get_depth
 from chrislib.data_util import load_image
-from chrislib.general import invert, uninvert, view, np_to_pil, to2np, add_chan
+from chrislib.general import invert, uninvert, view, np_to_pil
 from chrislib.normal_util import get_omni_normals
 
 import intrinsic.model_util
@@ -36,11 +36,69 @@ def run_full_pipeline(
     fg_top_left_pos,
     fg_scale_relative=0.25, # relative to the size of the output image
     
-    max_edge_size=1024
+    max_edge_size=1024,
+
+    early_stop=False, # output just the composited image without loading models
 ):
     """
     outputs resulting files into `folder_name`
     """
+
+    if early_stop == True:
+        print("\nearly_stop=True")
+
+        print("\n2.1 load & resize bg_im")
+        bg_im_original = load_image(bg_im_path)
+        max_dim = max(bg_im_original.shape[0], bg_im_original.shape[1])
+        scale = max_edge_size / max_dim
+        bg_height = int(bg_im_original.shape[0] * scale)
+        bg_width  = int(bg_im_original.shape[1] * scale)
+        bg_im = skimage.transform.resize(bg_im_original, (bg_height, bg_width))
+        print(f"\toriginal bg_im shape: {bg_im_original.shape}")
+        print(f"\trescaled bg_im shape: {bg_im.shape}")
+
+        print("\n2.2 load, resize, and apply mask to fg_im")
+        fg_im_transparent = load_image(fg_im_path)
+        fg_im = fg_im_transparent[:, :, 0:3]
+        fg_mask = fg_im_transparent[:, :, 3]
+        print(f"\tfg_im shape: {fg_im.shape}")
+        print(f"\tfg_mask shape: {fg_mask.shape}")
+
+        bb = utils.get_bbox(fg_mask)
+        fg_im_crop = fg_im[bb[0]:bb[1], bb[2]:bb[3], :].copy()
+        fg_mask_crop = fg_mask[bb[0]:bb[1], bb[2]:bb[3]].copy()
+        max_dim = max(fg_im_crop.shape[0], fg_im_crop.shape[1])
+        fg_scale = MAX_EDGE_SIZE / max_dim
+        cropped_height = int(fg_im_crop.shape[0] * fg_scale)
+        cropped_width  = int(fg_im_crop.shape[1] * fg_scale)
+        fg_im_crop = skimage.transform.resize(fg_im_crop, (cropped_height, cropped_width))
+        fg_mask_crop = skimage.transform.resize(fg_mask_crop, (cropped_height, cropped_width))
+        print(f"\tfg_im_crop shape: {fg_im_crop.shape}")
+        print(f"\tfg_mask_crop shape: {fg_mask_crop.shape}")
+
+        bb = utils.get_bbox(fg_mask)
+
+        fg_scaled_height = int(cropped_height * fg_scale_relative)
+        fg_scaled_width  = int(cropped_width  * fg_scale_relative)
+        
+        top  = int(fg_top_left_pos[0] * bg_height)
+        left = int(fg_top_left_pos[1] * bg_width)
+
+        fg_im_crop = fg_im[bb[0]:bb[1], bb[2]:bb[3], :].copy()
+        fg_im_rescaled   = skimage.transform.resize(fg_im_crop, (fg_scaled_height, fg_scaled_width), anti_aliasing=True)
+        fg_mask_rescaled = skimage.transform.resize(fg_mask_crop, (fg_scaled_height, fg_scaled_width), anti_aliasing=True)
+
+        comp = utils.composite_crop(
+            bg_im,
+            (top, left),
+            fg_im_rescaled,
+            fg_mask_rescaled,
+        )
+
+        os.makedirs(f"output/{folder_name}/", exist_ok=True)
+        np_to_pil(comp).save(f"output/{folder_name}/comp.png")
+
+        return
 
     print("\n1.1 loading depth model")
     depth_model = create_depth_models()
@@ -233,64 +291,88 @@ def run_full_pipeline(
 
     print("\n8. write images")
     
-    bg_im_name = os.path.basename(bg_im_path).split(".")[0]
-    fg_im_name = os.path.basename(fg_im_path).split(".")[0]
-
     os.makedirs(f"output/{folder_name}/", exist_ok=True)
 
-    np_to_pil(bg_im).save(f"output/{folder_name}/{bg_im_name}.png")
-    np_to_pil(im_depth).save(f"output/{folder_name}/{bg_im_name}_depth.png")
-    np_to_pil(im_inv_shading[:, :, 0]).save(f"output/{folder_name}/{bg_im_name}_inv_shading.png")
-    np_to_pil(im_albedo).save(f"output/{folder_name}/{bg_im_name}_albedo.png")
-    np_to_pil(im_normals).save(f"output/{folder_name}/{bg_im_name}_normals.png")
+    np_to_pil(bg_im).save(f"output/{folder_name}/bg_im.png")
+    np_to_pil(im_depth).save(f"output/{folder_name}/bg_depth.png")
+    np_to_pil(im_inv_shading[:, :, 0]).save(f"output/{folder_name}/bg_inv_shading.png")
+    np_to_pil(im_albedo).save(f"output/{folder_name}/bg_albedo.png")
+    np_to_pil(im_normals).save(f"output/{folder_name}/bg_normals.png")
 
-    np_to_pil(fg_full_mask[:, :, 0]).save(f"output/{folder_name}/{fg_im_name}_full_mask.png")
-    np_to_pil(fg_full_depth).save(f"output/{folder_name}/{fg_im_name}_full_depth.png")
+    np_to_pil(fg_full_mask[:, :, 0]).save(f"output/{folder_name}/fg_full_mask.png")
+    np_to_pil(fg_full_depth).save(f"output/{folder_name}/fg_full_depth.png")
 
     # NOTE: despite the naming convention, all images are the "cropped" versions
     # np_to_pil(fg_im_crop).save(f"output/{folder_name}/{fg_im_name}.png")
     # np_to_pil(fg_mask_crop).save(f"output/{folder_name}/{fg_im_name}_mask.png")
     # np_to_pil(fg_im_depth).save(f"output/{folder_name}/{fg_im_name}_depth.png")
     # np_to_pil(fg_im_inv_shading).save(f"output/{folder_name}/{fg_im_name}_inv_shading.png")
-    np_to_pil(fg_im_albedo).save(f"output/{folder_name}/{fg_im_name}_albedo.png")
+    np_to_pil(fg_im_albedo).save(f"output/{folder_name}/fg_albedo.png")
     # np_to_pil(fg_im_normals).save(f"output/{folder_name}/{fg_im_name}_normals.png")
 
-    np_to_pil(comp).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}.png")
+    np_to_pil(comp).save(f"output/{folder_name}/comp.png")
     #np_to_pil(comp_mask).save(f"output/{folder_name}/{fg_im_name}_mask.png")
-    np_to_pil(comp_depth).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_depth.png")
-    np_to_pil(comp_inv_shading[:, :, 0]).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_inv_shading.png")
+    np_to_pil(comp_depth).save(f"output/{folder_name}/comp_depth.png")
+    np_to_pil(comp_inv_shading[:, :, 0]).save(f"output/{folder_name}/comp_inv_shading.png")
     #np_to_pil(comp_albedo).save(f"output/{folder_name}/{fg_im_name}_albedo.png")
-    np_to_pil(comp_normals).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_normals.png")
-    np_to_pil(comp_harmonized).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_harmonized.png")
-    np_to_pil(comp_albedo_harmonized).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_albedo_harmonized.png")
-    np_to_pil(original_albedo).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_original_albedo.png")
+    np_to_pil(comp_normals).save(f"output/{folder_name}/comp_normals.png")
+    np_to_pil(comp_harmonized).save(f"output/{folder_name}/comp_harmonized.png")
+    np_to_pil(comp_albedo_harmonized).save(f"output/{folder_name}/comp_albedo_harmonized.png")
+    np_to_pil(original_albedo).save(f"output/{folder_name}/comp_original_albedo.png")
 
-    np_to_pil(main_result['composite']).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_main_result.png")
+    np_to_pil(main_result['composite']).save(f"output/{folder_name}/main_result.png")
     #np_to_pil(main_result['reshading']).save(f"output/{folder_name}/{bg_im_name}_{fg_im_name}_main_result_2.png")
 
 # ----------------------------------------------- #
 # config 
 
-#BG_IM_PATH = "../../background/map-8526430.jpg"
-#BG_IM_PATH = "../../background/trees-8512979.jpg"
-#BG_IM_PATH = "../../background/soap-8429699.jpg" # TODO: test removing gamma correction for the soap example
-#BG_IM_PATH = "../../background/IMG_1520.jpg"
-#BG_IM_PATH = "../../background/cycling-8215973.jpg"
+if True:
+    BG_IM_PATH = "../../examples_from_paper/bg/pillar.jpeg"
+    FG_IM_PATH = "../../examples_from_paper/fg_transparent/white_bag.png"
+    FOLDER_NAME = "pillar-bag"
+    FG_TOP_LEFT_POS = [0.53, 0.49]
+    FG_RELATIVE_SCALE = 0.18
 
-#FG_IM_PATH = "../../foreground/trolley-2582492.png"
-#FG_IM_PATH = "../../foreground/shampoo-1860642.png"
+if False:
+    BG_IM_PATH = "../../examples_from_paper/bg/classroom.jpeg"
+    FG_IM_PATH = "../../examples_from_paper/fg_transparent/soap.png"
+    FOLDER_NAME = "classroom-soap"
+    FG_TOP_LEFT_POS = [0.4, 0.45]
+    FG_RELATIVE_SCALE = 0.22
 
-BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
-FG_IM_PATH = "../../foreground/dressing-table-947429.png"
-FOLDER_NAME = "dresser-music"
+if False:
+    BG_IM_PATH = "../../examples_from_paper/bg/cone_org.jpeg"
+    FG_IM_PATH = "../../examples_from_paper/fg_transparent/white_chair.png"
+    FOLDER_NAME = "cone-chair"
+    FG_TOP_LEFT_POS = [0.24, 0.55]
+    FG_RELATIVE_SCALE = 0.33
+
+if False:
+    BG_IM_PATH = "../../examples_from_paper/bg/lamp.jpeg"
+    FG_IM_PATH = "../../examples_from_paper/fg_transparent/figurine.png"
+    FOLDER_NAME = "lamp-robot"
+    FG_TOP_LEFT_POS = [0.42, 0.38]
+    FG_RELATIVE_SCALE = 0.21
+
+#BG_IM_PATH = "../../background/soap-8429699.jpg"
+#FG_IM_PATH = "../../foreground/straw-hat-947146.png"
+#FOLDER_NAME = "soap-hat"
+#FG_TOP_LEFT_POS = [0.45, 0.4]
+#FG_RELATIVE_SCALE = 0.25
+
+#BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
+#FG_IM_PATH = "../../foreground/dressing-table-947429.png"
+#FOLDER_NAME = "dresser-music"
+#FG_TOP_LEFT_POS = [0.35, 0.34]
+#FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
 
 #BG_IM_PATH = "../../background/door-8453898.jpg"
 #FG_IM_PATH = "../../foreground/lotus-3192656.png"
 #FOLDER_NAME = "lotus-door"
+#FG_TOP_LEFT_POS = [0.35, 0.34]
+#FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
 
 MAX_EDGE_SIZE = 1024
-FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
-FG_TOP_LEFT_POS = [0.35, 0.34]
 
 # ----------------------------------------------- #
 # main
@@ -305,5 +387,6 @@ if __name__ == "__main__":
         FG_TOP_LEFT_POS,
         FG_RELATIVE_SCALE, # relative to the size of the output image
 
-        MAX_EDGE_SIZE
+        MAX_EDGE_SIZE,
+        early_stop=False
     )

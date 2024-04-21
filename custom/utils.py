@@ -1,5 +1,5 @@
 import numpy as np
-
+import numba
 import torch
 
 import skimage.transform
@@ -77,6 +77,65 @@ def composite_depth(im, loc, fg, mask):
     im[loc[0] : loc[0] + c_h, loc[1] : loc[1] + c_w] = comp
 
     return im
+
+@numba.njit()
+def calculate_screen_space_shadows_original(
+    light_direction: np.ndarray[np.float64], # [x,y,z]
+    depth_map, # closest values will be positive, while furthest values will be 0.0 (or negative!)
+    composite_mask, # NOTE: if this mask is set to always be one, then the mask will display all shadows
+    depth_cutoff:float,
+):
+    """
+    params:
+    - light_direction is a vector which represents the ray direction of the light. Shadows will step in the opposite direction.
+    - `composite_mask` is the mask which is the size of the original image & contains only the composite image. If a pixel is behind this one, then we should include the shadow.
+    - `depth_multiplier` refers to the conversion rate between the depth values and the actual metric depth of the scene. Amaller than 1.0 makes the scene more shallow, while larger than 1.0 makes the scene deeper.
+
+    returns:
+    - a colored mask representing which pixels were shaded by the new composited image
+    """
+
+    MAX_STEPS = 512
+    height, width = depth_map.shape[0], depth_map.shape[1]
+
+    shaded_mask = np.zeros_like(composite_mask)
+
+    # a step should be the correct size so that the last step ends up higher than the max depth in the image.
+    min_depth = np.min(depth_map)
+    max_depth = np.max(depth_map)
+
+    light_direction = light_direction / np.linalg.norm(light_direction)
+    step_vector = -light_direction / light_direction[2] * (min_depth - max_depth) / MAX_STEPS
+
+    for y in range(height):
+        for x in range(width):
+            z = depth_map[y, x]
+            camera_relative_coord = np.asarray([x, y, z], dtype=np.float64)
+        
+            for step in range(MAX_STEPS):
+                camera_relative_coord += step_vector
+
+                approx_x = int(camera_relative_coord[0])
+                approx_y = int(camera_relative_coord[1])
+
+                # check boundary conditions
+                if approx_x < 0 or approx_x >= depth_map.shape[1]:
+                    break
+                elif approx_y < 0 or approx_y >= depth_map.shape[0]:
+                    break
+                
+                # take a step, and check the texture again
+                current_depth_loc = camera_relative_coord[2]
+                depth_map_value = depth_map[approx_y, approx_x]
+                if current_depth_loc < depth_map_value:
+                    if composite_mask[approx_y, approx_x] > 0.0:
+                        # let the light ray go behind our object if there is space
+                        # if current_depth_loc > (depth_map_value - composite_mask_depth):
+                        if current_depth_loc > depth_cutoff:
+                            # set shadow iff the shadow was being casted by our object specifically
+                            shaded_mask[y, x] = 1
+                    
+    return shaded_mask
 
 def compute_reshading_with_shadow(
     comp_harmonized, 
