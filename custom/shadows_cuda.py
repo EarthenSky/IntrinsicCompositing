@@ -61,8 +61,10 @@ def calculate_screen_space_shadows_cuda(light_direction,
         approx_x = int(camera_relative_coord[0])
         approx_y = int(camera_relative_coord[1])
 
-        # Boundary check
-        if approx_x < 0 or approx_x >= width or approx_y < 0 or approx_y >= height:
+        # check boundary conditions
+        if approx_x < 0 or approx_x >= comp_depth.shape[1]:
+            break
+        elif approx_y < 0 or approx_y >= comp_depth.shape[0]:
             break
 
         current_depth_loc = camera_relative_coord[2]
@@ -219,7 +221,7 @@ def run_shadow_pipeline(
 
     end = time.time()
     shaded_mask = shaded_mask_gpu.copy_to_host()
-    shaded_mask[fg_full_mask > 0.0] = 0
+    #shaded_mask[fg_full_mask > 0.0] = 0
     
     print(f"elapsed: {end-start}s")
 
