@@ -327,50 +327,39 @@ def run_full_pipeline(
 # config 
 
 if True:
-    BG_IM_PATH = "../../examples_from_paper/bg/pillar.jpeg"
-    FG_IM_PATH = "../../examples_from_paper/fg_transparent/white_bag.png"
+    BG_IM_PATH = "./examples_from_paper/bg/pillar.jpeg"
+    FG_IM_PATH = "./examples_from_paper/fg_transparent/white_bag.png"
     FOLDER_NAME = "pillar-bag"
     FG_TOP_LEFT_POS = [0.53, 0.49]
     FG_RELATIVE_SCALE = 0.18
 
 if False:
-    BG_IM_PATH = "../../examples_from_paper/bg/classroom.jpeg"
-    FG_IM_PATH = "../../examples_from_paper/fg_transparent/soap.png"
+    BG_IM_PATH = "./examples_from_paper/bg/classroom.jpeg"
+    FG_IM_PATH = "./examples_from_paper/fg_transparent/soap.png"
     FOLDER_NAME = "classroom-soap"
     FG_TOP_LEFT_POS = [0.4, 0.45]
     FG_RELATIVE_SCALE = 0.22
 
 if False:
-    BG_IM_PATH = "../../examples_from_paper/bg/cone_org.jpeg"
-    FG_IM_PATH = "../../examples_from_paper/fg_transparent/white_chair.png"
+    BG_IM_PATH = "./examples_from_paper/bg/cone_org.jpeg"
+    FG_IM_PATH = "./examples_from_paper/fg_transparent/white_chair.png"
     FOLDER_NAME = "cone-chair"
     FG_TOP_LEFT_POS = [0.24, 0.55]
     FG_RELATIVE_SCALE = 0.33
 
 if False:
-    BG_IM_PATH = "../../examples_from_paper/bg/lamp.jpeg"
-    FG_IM_PATH = "../../examples_from_paper/fg_transparent/figurine.png"
+    BG_IM_PATH = "./examples_from_paper/bg/lamp.jpeg"
+    FG_IM_PATH = "./examples_from_paper/fg_transparent/figurine.png"
     FOLDER_NAME = "lamp-robot"
     FG_TOP_LEFT_POS = [0.42, 0.38]
     FG_RELATIVE_SCALE = 0.21
 
-#BG_IM_PATH = "../../background/soap-8429699.jpg"
-#FG_IM_PATH = "../../foreground/straw-hat-947146.png"
-#FOLDER_NAME = "soap-hat"
-#FG_TOP_LEFT_POS = [0.45, 0.4]
-#FG_RELATIVE_SCALE = 0.25
-
-#BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
-#FG_IM_PATH = "../../foreground/dressing-table-947429.png"
-#FOLDER_NAME = "dresser-music"
-#FG_TOP_LEFT_POS = [0.35, 0.34]
-#FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
-
-#BG_IM_PATH = "../../background/door-8453898.jpg"
-#FG_IM_PATH = "../../foreground/lotus-3192656.png"
-#FOLDER_NAME = "lotus-door"
-#FG_TOP_LEFT_POS = [0.35, 0.34]
-#FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
+if False:
+    BG_IM_PATH = "../../background/sheet-music-8463988.jpg"
+    FG_IM_PATH = "../../foreground/dressing-table-947429.png"
+    FOLDER_NAME = "dresser-music-2"
+    FG_TOP_LEFT_POS = [0.35, 0.34]
+    FG_RELATIVE_SCALE = 0.25 # how large the fg image should be when compared to the bg
 
 MAX_EDGE_SIZE = 1024
 

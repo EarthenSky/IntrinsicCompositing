@@ -1,7 +1,7 @@
 # IntrinsicCompositing Extension - CMPT 461
 
 ## setup
-- follow the original setup instructions for the intrinsicCompositing repo
+- follow the original setup instructions for the IntrinsicCompositing repo
 - activate the virtual environment venv
 
 ## run manual pipeline
@@ -11,5 +11,5 @@
 
 ## generate shadow & final result
 - first, input the variables at the bottom of the file & select the folder you wish to generate a shadow for. You can decide on the blur amount to
-- Run `python manual_pipeline.py`
+- Run `python shadows.py`
 - You result will be written to the folder from above

@@ -163,7 +163,7 @@ def run_shadow_pipeline(
         small_bg_normals,
         small_bg_im,
     )
-    light_direction = np.asarray([-coeffs[0], coeffs[1], coeffs[2]], dtype=np.float64)
+    light_direction = np.asarray([coeffs[0], coeffs[1], coeffs[2]], dtype=np.float64)
     light_direction = light_direction / np.linalg.norm(light_direction)
     light_direction[2] = -abs(light_direction[2])
     #light_direction[2] = np.sqrt(1 - light_direction[0]**2 - light_direction[1]**2)
@@ -266,6 +266,16 @@ def run_shadow_pipeline(
 # --------------------------------------------------- #
 
 # In order to generate shadows, you must first 
+
+if False:
+    FOLDER_NAME = "dresser-music-2"
+    SHADOW_OPACITY = 0.7
+    SHADOW_BLUR_PX = 5
+
+    BG_DEPTH_MULTIPLIER = 512.0,
+    FG_SQUISH = 70.0,
+    FG_DEPTH_PAD = 5.0,
+    FG_DISTANCE = 220.0,
 
 if True:
     FOLDER_NAME = "pillar-bag"
