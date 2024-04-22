@@ -1,44 +1,60 @@
 import os, time
 
-import cupy as cp
 import numpy as np
 import skimage.transform
 from scipy.ndimage import gaussian_filter
-from numba import jit
 from numba import cuda, float64
-import math
 
 from chrislib.data_util import load_image
 from chrislib.general import invert, uninvert, view, np_to_pil, to2np, add_chan
 
+import intrinsic_compositing.shading.pipeline
+from intrinsic_compositing.shading.pipeline import (
+    compute_reshading,
+    load_reshading_model,
+    generate_shd,
+    get_light_coeffs
+)
+
+import intrinsic_compositing.albedo.pipeline
+
+from omnidata_tools.model_util import load_omni_model
+from chrislib.normal_util import get_omni_normals
+import math
+
 import utils
 
+import torch
+
+print(torch.cuda.is_available())
+
+
 @cuda.jit
-def calculate_screen_space_shadows_cuda(light_direction, depth_map, composite_mask, depth_cutoff, shaded_mask, min_depth, max_depth):
+def calculate_screen_space_shadows_cuda(light_direction, 
+                                        bg_depth_scaled, 
+                                        comp_depth, 
+                                        composite_mask, 
+                                        depth_cutoff, 
+                                        shaded_mask, 
+                                        min_depth, 
+                                        max_depth, 
+                                        step_vector, 
+                                        MAX_STEPS,
+                                        MAX_STEPS_INT,
+                                        ignore_fg):
     x, y = cuda.grid(2)  # Get the x, y position of the thread.
-    height, width = depth_map.shape
+    height, width = comp_depth.shape
 
     if x >= width or y >= height:
         return  # Check boundaries
-
-    MAX_STEPS = 256
-    light_direction_norm = cuda.local.array(3, dtype=float64)
-    # Normalizing the light_direction vector
-    norm = (light_direction[0]**2 + light_direction[1]**2 + light_direction[2]**2)**0.5
-    for i in range(3):
-        light_direction_norm[i] = light_direction[i] / norm
-
-    step_vector = cuda.local.array(3, dtype=float64)    
-    for i in range(3):
-        step_vector[i] = -light_direction_norm[i] / light_direction_norm[2] * (min_depth - max_depth) / MAX_STEPS
-
-    z = depth_map[y, x]
+    
+    z = bg_depth_scaled[y, x]
     camera_relative_coord = cuda.local.array(3, dtype=float64)
     camera_relative_coord[0] = x
     camera_relative_coord[1] = y
     camera_relative_coord[2] = z
 
-    for step in range(MAX_STEPS):
+    for step in range(MAX_STEPS_INT):
         for i in range(3):
             camera_relative_coord[i] += step_vector[i]
 
@@ -50,75 +66,124 @@ def calculate_screen_space_shadows_cuda(light_direction, depth_map, composite_ma
             break
 
         current_depth_loc = camera_relative_coord[2]
-        depth_map_value = depth_map[approx_y, approx_x]
+        depth_map_value = comp_depth[approx_y, approx_x]
 
-        if current_depth_loc < depth_map_value and composite_mask[approx_y, approx_x] > 0.0 and current_depth_loc > depth_cutoff:
+        if current_depth_loc < depth_map_value and composite_mask[approx_y, approx_x] > 0.5 and current_depth_loc > depth_cutoff:
             shaded_mask[y, x] = 1
+        elif (not ignore_fg) and current_depth_loc < depth_map_value and composite_mask[approx_y, approx_x] <= 0.0 and step > int(MAX_STEPS * 0.01):
+            break
 
 
 def combine_depth(
-    bg_depth: np.ndarray[np.float32], 
-    fg_full_mask: np.ndarray[np.float32], 
-    fg_full_depth: np.ndarray[np.float32], 
-
+    bg_depth: np.ndarray[np.float64], 
+    fg_full_mask: np.ndarray[np.float64], 
+    fg_full_depth: np.ndarray[np.float64], 
+    
     bg_depth_multiplier=1.0,
     fg_squish=0.2,
     fg_depth_pad=0.2,
     fg_distance=0.6, # can be negative
-) -> tuple[np.ndarray[np.float32], float]:
+) -> tuple[np.ndarray[np.float64], float]:
     closest_masked_z = np.max(fg_full_mask[fg_full_mask > 0.0] * bg_depth_multiplier * bg_depth[fg_full_mask > 0.0])
     depth_cutoff = closest_masked_z + fg_distance
 
     combined_depth = bg_depth_multiplier * bg_depth.copy()
     combined_depth[fg_full_mask > 0.0] = depth_cutoff + fg_depth_pad + fg_full_depth[fg_full_mask > 0.0] * fg_squish
 
-    return combined_depth, depth_cutoff
+    bg_depth_scaled = bg_depth_multiplier * bg_depth.copy()
+
+    return combined_depth, bg_depth_scaled, depth_cutoff
 
 
-if __name__ == "__main__":
+def run_shadow_pipeline(
+    folder_name: str, 
+    shadow_opacity: float, 
+    shadow_blur_px: int,
 
-    FOLDER_NAME = "lotus-door"
-    COMBINED_NAME = "lotus-door"
+    bg_depth_multiplier: float,
+    fg_squish: float,
+    fg_depth_pad: float,
+    fg_distance: float,
 
-    BG_DEPTH_PATH = f"output/{FOLDER_NAME}/door-8453898_depth.png"
-
-    FG_FULL_MASK_PATH = f"output/{FOLDER_NAME}/lotus-3192656_full_mask.png"
-    FG_FULL_DEPTH_PATH = f"output/{FOLDER_NAME}/lotus-3192656_full_depth.png"
-
-    SHADOW_OPACITY = 0.45
-    SHADOW_BLUR_PX = 6
-
-    # --------------------------------------------------- #
-
+    ignore_fg:bool,
+):  
     print("\n1.1 load our images")
-    bg_depth = load_image(BG_DEPTH_PATH)
+    bg_im          = load_image(f"output/{folder_name}/bg_im.png")
+    bg_depth       = load_image(f"output/{folder_name}/bg_depth.png")
+    bg_inv_shading = load_image(f"output/{folder_name}/bg_inv_shading.png")
+
+    comp             = load_image(f"output/{folder_name}/comp.png")
+    comp_inv_shading = load_image(f"output/{folder_name}/comp_inv_shading.png")[:, :, np.newaxis]
+    comp_normals     = load_image(f"output/{folder_name}/comp_normals.png") 
+    comp_depth_og    = load_image(f"output/{folder_name}/comp_depth.png")
 
     # get "full image mask" from the selected area mask 
-    fg_full_mask = load_image(FG_FULL_MASK_PATH)
-    fg_full_depth = load_image(FG_FULL_DEPTH_PATH)
+    fg_full_mask  = load_image(f"output/{folder_name}/fg_full_mask.png")
+    fg_full_depth = load_image(f"output/{folder_name}/fg_full_depth.png")
 
-    print(f"\tbg_min_depth before:{np.min(bg_depth)}")
-    print(f"\tbg_max_depth before:{np.max(bg_depth)}")
+    bg_height = bg_im.shape[0]
+    bg_width  = bg_im.shape[1]
 
-    print("\n1.2 combine depth maps")
-    combined_depth, depth_cutoff = combine_depth(
+    print("\n2.1 loading models")
+    normals_model = load_omni_model()
+    albedo_model = intrinsic_compositing.albedo.pipeline.load_albedo_harmonizer()
+    reshading_model = load_reshading_model('further_trained')
+
+    print("\n2.2 get shading coefficients")
+    # to ensure that normals are globally accurate we compute them at
+    # a resolution of 512 pixels, so resize our shading and image to compute 
+    # rescaled normals, then run the lighting model optimization
+    max_dim = max(bg_height, bg_width)
+    small_height = int(bg_height * (512.0 / max_dim))
+    small_width = int(bg_width * (512.0 / max_dim))
+    small_bg_im = skimage.transform.resize(bg_im, (small_height, small_width), anti_aliasing=True)
+    small_bg_normals = get_omni_normals(normals_model, small_bg_im)
+    small_bg_inv_shading = skimage.transform.resize(bg_inv_shading, (small_height, small_width), anti_aliasing=True)
+
+    coeffs, _ = intrinsic_compositing.shading.pipeline.get_light_coeffs(
+        small_bg_inv_shading[:, :], 
+        small_bg_normals,
+        small_bg_im,
+    )
+    light_direction = np.asarray([-coeffs[0], coeffs[1], coeffs[2]], dtype=np.float64)
+    light_direction = light_direction / np.linalg.norm(light_direction)
+    light_direction[2] = -abs(light_direction[2])
+    #light_direction[2] = np.sqrt(1 - light_direction[0]**2 - light_direction[1]**2)
+    
+    print("[x, y, -z], c")
+    print(coeffs)
+
+    print("\n3. combine depth maps")
+    combined_depth, bg_depth_scaled, depth_cutoff = combine_depth(
         bg_depth,
         fg_full_mask,
         fg_full_depth,
-
-        bg_depth_multiplier=64.0,
-        fg_squish=20.0,
-        fg_depth_pad=0.0,
-        fg_distance=0.2,
+        
+        bg_depth_multiplier,
+        fg_squish,
+        fg_depth_pad,
+        fg_distance,
     )
 
-    print(f"\tbg_min_depth combined:{np.min(combined_depth)}")
-    print(f"\tbg_max_depth combined:{np.max(combined_depth)}")
+    print(f"\tbg_min_depth before:\t{np.min(bg_depth)}")
+    print(f"\tbg_max_depth before:\t{np.max(bg_depth)}")
+    print(f"\tbg_min_depth combined:\t{np.min(combined_depth)}")
+    print(f"\tbg_max_depth combined:\t{np.max(combined_depth)}")
+
+    print(f"\n\t depth_cutoff: {depth_cutoff}")
+
+    # NOTE: ensure the TMP_MAX_STEPS is correct
+    step_vector = -light_direction / light_direction[2] * (np.min(combined_depth) - np.max(combined_depth)) 
+    MAX_STEPS = np.maximum(np.abs(step_vector[0]), np.abs(step_vector[1]))
+    step_vector /= MAX_STEPS
+    print(f"\tstep_vector: {step_vector} (in px)")
+    print(f"\tTMP_MAX_STEPS: {MAX_STEPS}")
+    
+    MAX_STEPS_INT = int(np.maximum(np.iinfo(np.int32).max, int(MAX_STEPS)+1))
 
     start = time.time()
-    print("\n2. generate shaded maps")
-    light_direction = np.asarray([-40, -40, 1], dtype=np.float32)
-    # Kernel invocation
+    print("\n4. generate shaded maps")
+    
     shaded_mask_gpu = np.zeros_like(fg_full_mask)
     min_depth = combined_depth.min()
     max_depth = combined_depth.max()
@@ -127,6 +192,9 @@ if __name__ == "__main__":
     d_depth_map = cuda.to_device(combined_depth)
     d_composite_mask = cuda.to_device(fg_full_mask)
     shaded_mask_gpu = cuda.to_device(shaded_mask_gpu)
+    d_bg_depth_scaled = cuda.to_device(bg_depth_scaled)
+    d_step_vector = cuda.to_device(step_vector)
+    #d_MAX_STEPS = cuda.to_device(MAX_STEPS)
 
     threadsperblock = (32, 32)
     blockspergrid_x = math.ceil(fg_full_mask.shape[1] / threadsperblock[0])
@@ -135,29 +203,134 @@ if __name__ == "__main__":
     print(blockspergrid_x, blockspergrid_y)
     blockspergrid = (blockspergrid_x, blockspergrid_y)
 
-    calculate_screen_space_shadows_cuda[blockspergrid, threadsperblock](d_light_direction, d_depth_map, d_composite_mask, depth_cutoff, shaded_mask_gpu, min_depth, max_depth)
+    calculate_screen_space_shadows_cuda[blockspergrid, threadsperblock](d_light_direction, 
+                                                                        d_bg_depth_scaled, 
+                                                                        d_depth_map, 
+                                                                        d_composite_mask, 
+                                                                        depth_cutoff[0], 
+                                                                        shaded_mask_gpu, 
+                                                                        min_depth, 
+                                                                        max_depth, 
+                                                                        d_step_vector, 
+                                                                        MAX_STEPS,
+                                                                        MAX_STEPS_INT,
+                                                                        ignore_fg
+                                                                        )
+
     end = time.time()
-    print(f"elapsed: {end-start}s")
     shaded_mask = shaded_mask_gpu.copy_to_host()
     shaded_mask[fg_full_mask > 0.0] = 0
+    
+    print(f"elapsed: {end-start}s")
 
-    print("\n3. combine shaded mask with image to produce a shadow & final result")
+    print("\n5. combine shaded mask with image to produce a shadow & final result")
 
-    print("\t3.1. apply blur & intensity to shadow")
+    print("\t5.1. apply blur & intensity to shadow")
 
     # get to-composite shadow
     blurred_shadow_mask = np.zeros((bg_depth.shape[0], bg_depth.shape[1], 4))
-    blurred_shadow_mask[:, :, 3] = shaded_mask * SHADOW_OPACITY
-    blurred_shadow_mask[:, :, 3] = gaussian_filter(blurred_shadow_mask[:, :, 3], sigma=SHADOW_BLUR_PX)
+    blurred_shadow_mask[:, :, 3] = shaded_mask * shadow_opacity
+    blurred_shadow_mask[:, :, 3] = gaussian_filter(blurred_shadow_mask[:, :, 3], sigma=shadow_blur_px)
 
-    # get albedo
-    # get shading
-    # get harmonized albedo of composite
-    # get reshading of composite
+    # remove any blured amount that would bleed over the fg image
+    BLUR_BLEED = 0.0
+    blurred_shadow_mask[:, :, 3][fg_full_mask > 0.0] *= (1 - fg_full_mask[fg_full_mask > 0.0]) * (1.0 - BLUR_BLEED) + BLUR_BLEED
 
-    print("\n4. save output")
+    print("\n6. do albedo harmonization")
 
-    np_to_pil(combined_depth / np.max(combined_depth)).save(f"examples/{COMBINED_NAME}_combined_depth.png")
-    np_to_pil(shaded_mask).save(f"examples/{COMBINED_NAME}_shaded_mask.png")
-    #np_to_pil(self_shading_shaded_mask).save(f"examples/{COMBINED_NAME}_shaded_mask_self_shading.png")
-    np_to_pil(blurred_shadow_mask).save(f"examples/{COMBINED_NAME}_blurred_shadow_mask.png")
+    # the albedo comes out gamma corrected so make it linear
+    comp_albedo_harmonized = intrinsic_compositing.albedo.pipeline.harmonize_albedo(
+        comp,
+        fg_full_mask[:, :, np.newaxis],
+        comp_inv_shading, 
+        albedo_model,
+        reproduce_paper=False,
+    ) ** 2.2
+
+    # Q: why do these look so weird? they just do
+    #original_albedo = (comp ** 2.2) / uninvert(comp_inv_shading)
+    comp_harmonized = comp_albedo_harmonized * uninvert(comp_inv_shading)
+
+    print("\n7. run reshading model")
+
+    # run the reshading model using the various composited components,
+    # and our lighting coefficients from the user interface
+    final_result = utils.compute_reshading_with_shadow(
+        comp_harmonized,
+        fg_full_mask,
+        blurred_shadow_mask[:, :, 3:],
+        comp_inv_shading,
+        comp_depth_og,
+        # TODO: figure out what's wrong with combined depth...
+        #combined_depth, # TODO: test if this is confusing to the network (it shouldn't be....)
+        comp_normals,
+        comp_albedo_harmonized,
+        coeffs, # TODO: do coefficients need to be reshaded?
+        reshading_model,
+    )
+
+    print("\n8. save output")
+
+    np_to_pil(combined_depth / np.max(combined_depth)).save(f"output/{folder_name}/combined_depth.png")
+    np_to_pil(shaded_mask).save(f"output/{folder_name}/shaded_mask.png")
+    np_to_pil(blurred_shadow_mask).save(f"output/{folder_name}/blurred_shadow_mask.png")
+    np_to_pil(final_result['composite']).save(f"output/{folder_name}/shadow_main_result.png")
+
+# --------------------------------------------------- #
+
+# In order to generate shadows, you must first 
+
+if True:
+    FOLDER_NAME = "pillar-bag"
+    SHADOW_OPACITY = 0.7
+    SHADOW_BLUR_PX = 5
+
+    BG_DEPTH_MULTIPLIER = 512.0,
+    FG_SQUISH = 70.0,
+    FG_DEPTH_PAD = 5.0,
+    FG_DISTANCE = -50.0,
+
+if False:
+    FOLDER_NAME = "classroom-soap"
+    SHADOW_OPACITY = 0.4
+    SHADOW_BLUR_PX = 9
+
+    BG_DEPTH_MULTIPLIER = 512.0,
+    FG_SQUISH = 100.0,
+    FG_DEPTH_PAD = 2.0,
+    FG_DISTANCE = -80.0,
+
+if False:
+    FOLDER_NAME = "cone-chair"
+    SHADOW_OPACITY = 0.97
+    SHADOW_BLUR_PX = 1
+
+    BG_DEPTH_MULTIPLIER = 1024.0,
+    FG_SQUISH = 110.0,
+    FG_DEPTH_PAD = 4.0,
+    FG_DISTANCE = -55.0,
+
+if False:
+    FOLDER_NAME = "lamp-robot"
+    SHADOW_OPACITY = 0.63
+    SHADOW_BLUR_PX = 3
+
+    BG_DEPTH_MULTIPLIER = 512.0,
+    FG_SQUISH = 65.0,
+    FG_DEPTH_PAD = 10.0,
+    FG_DISTANCE = -30.0,
+
+if __name__ == "__main__":
+
+    run_shadow_pipeline(
+        FOLDER_NAME, 
+        SHADOW_OPACITY, 
+        SHADOW_BLUR_PX,
+
+        BG_DEPTH_MULTIPLIER,
+        FG_SQUISH,
+        FG_DEPTH_PAD,
+        FG_DISTANCE,
+
+        ignore_fg=True,
+    )
